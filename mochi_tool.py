@@ -366,6 +366,42 @@ def calendar_cutoff_for_days(days: int) -> datetime:
     return local_start.astimezone(timezone.utc)
 
 
+def local_calendar_window(days: int) -> dict[str, Any]:
+    local_tz = datetime.now().astimezone().tzinfo
+    today = datetime.now(local_tz).date()
+    start_date = today - timedelta(days=days - 1)
+    local_start = datetime.combine(start_date, time.min, tzinfo=local_tz)
+    local_end = datetime.combine(today + timedelta(days=1), time.min, tzinfo=local_tz)
+    api_cutoff = calendar_cutoff_for_days(days)
+    return {
+        "timezone": str(local_tz),
+        "start_date": start_date.isoformat(),
+        "end_date": today.isoformat(),
+        "local_start": local_start.isoformat(),
+        "local_end": local_end.isoformat(),
+        "api_cutoff": api_cutoff.isoformat(),
+        "note": "Mochi API review dates are date-level midnight timestamps; counts are grouped by local calendar day.",
+    }
+
+
+def review_local_date(review_date: datetime) -> str:
+    local_tz = datetime.now().astimezone().tzinfo
+    utc_date = review_date.astimezone(timezone.utc)
+    utc_midnight = utc_date.hour == 0 and utc_date.minute == 0 and utc_date.second == 0
+    local_offset = local_tz.utcoffset(review_date.astimezone(local_tz))
+    if utc_midnight and local_offset is not None and local_offset > timedelta(0):
+        return (utc_date.date() + timedelta(days=1)).isoformat()
+
+    local_midnight = datetime.combine(
+        review_date.astimezone(local_tz).date() + timedelta(days=1),
+        time.min,
+        tzinfo=local_tz,
+    )
+    if review_date == local_midnight.astimezone(timezone.utc):
+        return local_midnight.date().isoformat()
+    return review_date.astimezone(local_tz).date().isoformat()
+
+
 def today_start_utc() -> datetime:
     local_tz = datetime.now().astimezone().tzinfo
     local_start = datetime.combine(datetime.now(local_tz).date(), time.min, tzinfo=local_tz)
@@ -600,13 +636,31 @@ def handle_review_stats(args: argparse.Namespace) -> Any:
     cutoff = calendar_cutoff_for_days(args.days)
     events = review_events_for_cards(cards, cutoff=cutoff)
     unique_cards = {card.get("id") for _, card, _ in events if card.get("id")}
+    by_local_date: dict[str, dict[str, Any]] = {}
+    for review_date, card, _ in events:
+        local_date = review_local_date(review_date)
+        if local_date not in by_local_date:
+            by_local_date[local_date] = {
+                "date": local_date,
+                "total_review_events": 0,
+                "unique_cards_reviewed": 0,
+                "_cards": set(),
+            }
+        by_local_date[local_date]["total_review_events"] += 1
+        if card.get("id"):
+            by_local_date[local_date]["_cards"].add(card["id"])
+
+    for day_stats in by_local_date.values():
+        day_stats["unique_cards_reviewed"] = len(day_stats.pop("_cards"))
 
     result: dict[str, Any] = {
         "days": args.days,
         "deck_id": args.deck_id,
+        "calendar_window": local_calendar_window(args.days),
         "total_review_events": len(events),
         "unique_cards_reviewed": len(unique_cards),
         "reviews_per_day": round(len(events) / args.days, 2),
+        "by_local_date": dict(sorted(by_local_date.items())),
     }
 
     if args.split_by_deck:
@@ -726,6 +780,7 @@ def handle_recent_reviews(args: argparse.Namespace) -> Any:
                 "name": card.get("name"),
                 "deck-id": card.get("deck-id"),
                 "reviewed_at": review_date.isoformat(),
+                "reviewed_local_date": review_local_date(review_date),
                 "remembered": review.get("remembered?"),
                 "due": due_date.isoformat() if due_date else None,
                 "snippet": make_snippet(searchable_text(card)),
@@ -735,6 +790,7 @@ def handle_recent_reviews(args: argparse.Namespace) -> Any:
     return {
         "days": args.days,
         "deck_id": args.deck_id,
+        "calendar_window": local_calendar_window(args.days),
         "limit": args.limit,
         "count": len(reviews),
         "reviews": reviews,
