@@ -356,6 +356,16 @@ def cutoff_for_days(days: int) -> datetime:
     return now_utc() - timedelta(days=days)
 
 
+def calendar_cutoff_for_days(days: int) -> datetime:
+    local_tz = datetime.now().astimezone().tzinfo
+    # Mochi exposes review dates as midnight timestamps, not exact review times.
+    # Include the previous date boundary so a same-day review logged as midnight
+    # UTC on the prior date is still visible in `--days 1`.
+    start_date = datetime.now(local_tz).date() - timedelta(days=days)
+    local_start = datetime.combine(start_date, time.min, tzinfo=local_tz)
+    return local_start.astimezone(timezone.utc)
+
+
 def today_start_utc() -> datetime:
     local_tz = datetime.now().astimezone().tzinfo
     local_start = datetime.combine(datetime.now(local_tz).date(), time.min, tzinfo=local_tz)
@@ -587,7 +597,7 @@ def handle_list_due_cards(args: argparse.Namespace) -> Any:
 def handle_review_stats(args: argparse.Namespace) -> Any:
     client = get_client(args.timeout)
     cards = fetch_all_cards(client, deck_id=args.deck_id)
-    cutoff = cutoff_for_days(args.days)
+    cutoff = calendar_cutoff_for_days(args.days)
     events = review_events_for_cards(cards, cutoff=cutoff)
     unique_cards = {card.get("id") for _, card, _ in events if card.get("id")}
 
@@ -704,7 +714,7 @@ def handle_search_cards(args: argparse.Namespace) -> Any:
 
 def handle_recent_reviews(args: argparse.Namespace) -> Any:
     cards = fetch_all_cards(get_client(args.timeout), deck_id=args.deck_id)
-    events = review_events_for_cards(cards, cutoff=cutoff_for_days(args.days))
+    events = review_events_for_cards(cards, cutoff=calendar_cutoff_for_days(args.days))
     events.sort(key=lambda item: item[0], reverse=True)
 
     reviews = []
